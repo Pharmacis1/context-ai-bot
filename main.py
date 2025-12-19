@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from openai import AsyncOpenAI
+from aiogram.types import FSInputFile
 
 # Загружаем секреты
 load_dotenv()
@@ -68,6 +69,7 @@ async def handle_text(message: types.Message):
     except Exception as e:
         await message.answer(f"Ошибка при анализе текста: {e}")
 
+
 # 2. Обработка Голосовых (Voice)
 @dp.message(F.voice)
 async def handle_voice(message: types.Message):
@@ -75,14 +77,15 @@ async def handle_voice(message: types.Message):
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     
     file_id = message.voice.file_id
-    file_path = f"voice_{file_id}.ogg" # Временное имя файла
+    file_path = f"voice_{file_id}.ogg"
+    transcript_path = f"transcript_{file_id}.txt" # Имя для текстового файла
 
     try:
-        # Скачиваем файл с серверов Telegram
+        # Скачиваем файл
         file = await bot.get_file(file_id)
         await bot.download_file(file.file_path, file_path)
 
-        # Отправляем в Whisper для транскрипции
+        # Отправляем в Whisper
         with open(file_path, "rb") as audio_file:
             transcription = await client.audio.transcriptions.create(
                 model="whisper-1", 
@@ -91,10 +94,21 @@ async def handle_voice(message: types.Message):
         
         original_text = transcription.text
         
-        # Показываем пользователю расшифровку (опционально, но удобно)
-        await message.answer(f"📝 **Текст голосового:**\n_{original_text}_", parse_mode="Markdown")
+        # --- ЛОГИКА ПРОВЕРКИ ДЛИНЫ ---
+        if len(original_text) > 4000:
+            # Если текст огромный, сохраняем в файл и отправляем документом
+            with open(transcript_path, "w", encoding="utf-8") as f:
+                f.write(original_text)
+            
+            # Отправка файла
+            doc = FSInputFile(transcript_path)
+            await message.answer_document(doc, caption="📝 Текст получился длинным, отправляю файлом.")
+        else:
+            # Если текст влезает, шлем сообщением
+            # Убираем parse_mode="Markdown", чтобы спецсимволы в речи не ломали бота
+            await message.answer(f"📝 **Текст голосового:**\n\n{original_text}")
 
-        # Генерируем саммари на основе расшифровки
+        # Генерируем саммари (оно обычно короткое, его можно слать текстом)
         await message.answer("⚙️ Анализирую...")
         summary = await generate_summary(original_text)
         await message.answer(summary)
@@ -103,9 +117,11 @@ async def handle_voice(message: types.Message):
         await message.answer(f"Ошибка с голосовым: {e}")
     
     finally:
-        # Удаляем временный файл, чтобы не засорять диск
+        # Чистим мусор (удаляем и аудио, и текстовый файл, если он был)
         if os.path.exists(file_path):
             os.remove(file_path)
+        if os.path.exists(transcript_path):
+            os.remove(transcript_path)
 
 async def main():
     await dp.start_polling(bot)
