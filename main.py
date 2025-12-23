@@ -7,7 +7,7 @@ from aiogram.filters import Command
 from aiogram.types import FSInputFile
 from openai import AsyncOpenAI
 
-from database import init_db, add_message, get_recent_messages
+from database import init_db, add_message, get_new_messages, update_bookmark
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -73,31 +73,46 @@ async def cmd_start(message: types.Message):
 
 @dp.message(Command("summary"))
 async def cmd_summary(message: types.Message):
-    # --- NEW: Проверка доступа ---
+    # Проверка доступа (если ты оставила whitelist)
     if message.from_user.id not in ALLOWED_USERS:
-        return # Просто игнорируем чужаков
-    # -----------------------------
+        return
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     
-    history = get_recent_messages(chat_id=message.chat.id, limit=50)
+    # 1. Просим базу дать ТОЛЬКО новые сообщения
+    # Она вернет список кортежей: [(id, username, text), ...]
+    new_messages = get_new_messages(chat_id=message.chat.id)
     
-    if not history:
-        await message.answer("📭 В этом чате пока пусто.")
+    if not new_messages:
+        await message.answer("💤 Ничего нового с момента последнего отчета.")
         return
 
-    chat_log = "\n".join([f"{name}: {text}" for name, text in history])
+    # 2. Формируем текст
+    # Нам не нужен id в тексте для GPT, поэтому берем name и text
+    chat_log = "\n".join([f"{m[1]}: {m[2]}" for m in new_messages])
     
+    # Собираем статистику для красивого ответа
+    count = len(new_messages)
+    word_form = "сообщений"
+    if count % 10 == 1 and count % 100 != 11: word_form = "сообщение"
+    elif 2 <= count % 10 <= 4 and (count % 100 < 10 or count % 100 >= 20): word_form = "сообщения"
+    
+    await message.answer(f"🧐 Анализирую {count} {word_form}...")
+
     try:
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Вот переписка:\n{chat_log}"}
+                {"role": "user", "content": f"Вот НОВЫЕ сообщения:\n{chat_log}"}
             ]
         )
         report = response.choices[0].message.content
         await message.answer(report)
+        
+        # 3. ВАЖНО: Запоминаем ID последнего обработанного сообщения
+        last_msg_id = new_messages[-1][0] # Берем ID из последней строки списка
+        update_bookmark(chat_id=message.chat.id, last_message_id=last_msg_id)
         
     except Exception as e:
         await message.answer(f"Ошибка AI: {e}")

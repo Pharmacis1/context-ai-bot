@@ -6,7 +6,8 @@ DB_NAME = "bot.db"
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # Добавили поле chat_id
+    
+    # 1. Таблица сообщений (как была)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,10 +18,20 @@ def init_db():
             created_at TIMESTAMP
         )
     ''')
+    
+    # 2. НОВАЯ Таблица состояния (закладки)
+    # chat_id - уникальный ключ (в одном чате только одна закладка)
+    # last_message_id - id последнего сообщения, которое мы уже "отсаммарили"
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS summary_state (
+            chat_id INTEGER PRIMARY KEY,
+            last_message_id INTEGER
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
-# Теперь принимаем chat_id при сохранении
 def add_message(chat_id, user_id, username, text):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -31,17 +42,36 @@ def add_message(chat_id, user_id, username, text):
     conn.commit()
     conn.close()
 
-# И фильтруем по chat_id при чтении!
-def get_recent_messages(chat_id, limit=20):
+# НОВАЯ УМНАЯ ФУНКЦИЯ
+def get_new_messages(chat_id):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute('''
-        SELECT username, text FROM messages 
-        WHERE chat_id = ? 
-        ORDER BY created_at DESC 
-        LIMIT ?
-    ''', (chat_id, limit)) # <-- Вот здесь магия фильтрации
     
-    data = cursor.fetchall()
+    # 1. Узнаем, на чем остановились в прошлый раз
+    cursor.execute('SELECT last_message_id FROM summary_state WHERE chat_id = ?', (chat_id,))
+    result = cursor.fetchone()
+    last_read_id = result[0] if result else 0
+    
+    # 2. Берем только те сообщения, которые НОВЕЕ, чем last_read_id
+    cursor.execute('''
+        SELECT id, username, text FROM messages 
+        WHERE chat_id = ? AND id > ?
+        ORDER BY created_at ASC
+    ''', (chat_id, last_read_id))
+    
+    messages = cursor.fetchall()
     conn.close()
-    return data[::-1]
+    
+    return messages
+
+# Функция, чтобы передвинуть закладку вперед
+def update_bookmark(chat_id, last_message_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    # INSERT OR REPLACE - если записи нет, создаст; если есть - обновит
+    cursor.execute('''
+        INSERT OR REPLACE INTO summary_state (chat_id, last_message_id)
+        VALUES (?, ?)
+    ''', (chat_id, last_message_id))
+    conn.commit()
+    conn.close()
