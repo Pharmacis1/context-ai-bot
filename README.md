@@ -1,3 +1,5 @@
+![AI Assisted](https://img.shields.io/badge/AI-Assisted-blue?style=flat-square&logo=openai)
+
 # ContextAI: PM Assistant Bot
 
 ## 💡 Проблема
